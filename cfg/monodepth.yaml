@@ -1,0 +1,66 @@
+# =========================
+# Training Configuration
+# =========================
+
+training:
+  batch_size: 4
+  epochs: 20
+  learning_rate: 0.0001
+  num_workers: 4
+  shuffle: true
+  pin_memory: true
+
+# =========================
+# Model Configuration
+# =========================
+
+model:
+  encoder:
+    type: ResnetEncoder
+    num_layers: 101
+    pretrained: true
+
+  depth_decoder:
+    type: DepthDecoder
+    scales: [0, 1, 2, 3]
+
+  pose_net:
+    type: PoseNet
+    num_input_images: 2
+    pretrained: true
+
+# =========================
+# Geometry / Projection
+# =========================
+
+geometry:
+  image_height: 192
+  image_width: 640
+  scales: [0, 1, 2, 3]
+
+# =========================
+# Loss Configuration
+# =========================
+
+loss:
+  use_ssim: true
+  ssim_weight: 0.85
+  l1_weight: 0.15
+  smoothness_weight: 1e-3
+
+# =========================
+# Dataset Configuration
+# =========================
+
+dataset:
+  name: TestDataset
+  csv_path: eigen_full_train.csv
+  root_dir: data/train
+  scales: [0, 1, 2, 3]
+
+# =========================
+# Runtime
+# =========================
+
+runtime:
+  device: cuda   # auto | cpu | cuda
