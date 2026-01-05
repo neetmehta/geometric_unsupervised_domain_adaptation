@@ -1,5 +1,6 @@
 import torch
 from dataset.kitti import KittiOdom
+from dataset.carla_dataset import CarlaDataset
 from torch.utils.data import DataLoader
 from layers.encoder import ResnetEncoder
 from layers.depth_decoder import DepthDecoder
@@ -40,7 +41,7 @@ class Trainer:
         
         # --- Data ---
         self.device = device
-        dataset = KittiOdom(csv_path=cfg.dataset.csv_path, root=cfg.dataset.root_dir, resize=(cfg.geometry.image_height, cfg.geometry.image_width), scales=cfg.dataset.scales)
+        dataset = CarlaDataset(cfg)
         self.dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=cfg.training.shuffle, num_workers=cfg.training.num_workers, pin_memory=cfg.training.pin_memory)
         self.epoch = cfg.training.epochs
 
@@ -50,8 +51,8 @@ class Trainer:
         self.writer = SummaryWriter(log_dir=log_dir)
         
         # Frequencies
-        self.log_loss_freq = 50   # Log loss every 50 steps
-        self.log_img_freq = 500   # Log images every 500 steps
+        self.log_loss_freq = cfg.tensorboard.log_loss_freq   # Log loss every 50 steps
+        self.log_img_freq = cfg.tensorboard.log_img_freq   # Log images every 500 steps
 
     def train(self):
         num_batches = len(self.dataloader)
@@ -76,10 +77,11 @@ class Trainer:
                 
                 # Move data to device
                 for key in data:
-                    data[key] = data[key].to(self.device)
+                    if isinstance(data[key], torch.Tensor):
+                        data[key] = data[key].to(self.device)
                 
                 # --- Forward Pass ---
-                input_image = data[("t", 0)]
+                input_image = data[("t", 0, 0)]
                 features = self.encoder(input_image)
                 outputs = self.decoder(features)
                 
@@ -88,12 +90,12 @@ class Trainer:
                 
                 # Pose 1: t -> t-1
                 pose[("axisangle", -1)], pose[("translation", -1)] = self.posenet(
-                    torch.cat([data[("t", 0)], data[("t-1", 0)]], dim=1)
+                    torch.cat([data[("t", 0, 0)], data[("t", -1, 0)]], dim=1)
                 )
 
                 # Pose 2: t -> t+1
                 pose[("axisangle", 1)], pose[("translation", 1)] = self.posenet(
-                    torch.cat([data[("t", 0)], data[("t+1", 0)]], dim=1)
+                    torch.cat([data[("t", 0, 0)], data[("t", 1, 0)]], dim=1)
                 )
 
                 total_loss = 0
@@ -122,13 +124,13 @@ class Trainer:
                         
                         # Sampling: Corrected Source Selection
                         # FIX: Using 't-1' for i=-1 and 't+1' for i=1
-                        source_key = "t-1" if i == -1 else "t+1"
+                        source_key = ("t", -1, 0) if i == -1 else ("t", 1, 0)
                         outputs[("recons", i, s)] = F.grid_sample(
-                            data[(source_key, 0)], pix_coords, padding_mode="border", align_corners=True
+                            data[source_key], pix_coords, padding_mode="border", align_corners=True
                         )
                         
                         reprojection_loss[(i, s)] = self.compute_reprojection_loss(
-                            outputs[("recons", i, s)], data[("t", 0)]
+                            outputs[("recons", i, s)], data[("t", 0, 0)]
                         )
                         
                     # Combine Losses
@@ -143,7 +145,7 @@ class Trainer:
                     # Smoothness Loss
                     mean_disp = outputs[("disp", s)].mean(2, True).mean(3, True)
                     norm_disp = outputs[("disp", s)] / (mean_disp + 1e-7)
-                    smoothness_loss = get_smooth_loss(norm_disp, data[("t", s)])
+                    smoothness_loss = get_smooth_loss(norm_disp, data[("t", 0, s)])
                     total_loss += smoothness_loss / (2 ** s)
                 
                 total_loss /= len(scales)
@@ -186,7 +188,7 @@ class Trainer:
         """Logs RGB, Reconstructions, and Colormapped Depth to TensorBoard"""
         
         # 1. Input RGB Image (Batch index 0)
-        input_rgb = data[("t", 0)][0] # [3, H, W]
+        input_rgb = data[("t",0, 0)][0] # [3, H, W]
         
         # 2. Reconstructed Image (Using t-1 -> t, Scale 0)
         recon_rgb = outputs[("recons", -1, 0)][0] # [3, H, W]

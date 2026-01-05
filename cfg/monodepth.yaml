@@ -3,10 +3,10 @@
 # =========================
 
 training:
-  batch_size: 4
+  batch_size: 2
   epochs: 20
   learning_rate: 0.0001
-  num_workers: 4
+  num_workers: 0
   shuffle: true
   pin_memory: true
 
@@ -55,8 +55,10 @@ loss:
 dataset:
   name: TestDataset
   csv_path: eigen_full_train.csv
-  root_dir: data/train
+  root_dir: carla_dataset
   scales: [0, 1, 2, 3]
+  img_height: 192
+  img_width: 640
 
 # =========================
 # Runtime
@@ -64,3 +66,7 @@ dataset:
 
 runtime:
   device: cuda   # auto | cpu | cuda
+
+tensorboard:
+  log_loss_freq: 10
+  log_img_freq: 500
