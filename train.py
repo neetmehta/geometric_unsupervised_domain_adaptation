@@ -100,6 +100,14 @@ class Trainer:
 
                 total_loss = 0
                 scales = range(4)
+                for i in [-1, 1]:
+                    pose[("T", i)] = transformation_from_parameters(
+                        pose[("axisangle", i)][:,0], 
+                        pose[("translation", i)][:,0], 
+                        invert=(i == -1)
+                    )
+                
+                    print(pose[("T", i)].detach().cpu().numpy())
                 
                 for s in scales:
                     # Upsample disparity to input resolution
@@ -111,12 +119,6 @@ class Trainer:
                     outputs[("depth", s)] = depth
 
                     for i in [-1, 1]:
-                        # Inverse pose for t-1, regular for t+1
-                        pose[("T", i)] = transformation_from_parameters(
-                            pose[("axisangle", i)][:,0], 
-                            pose[("translation", i)][:,0], 
-                            invert=(i == -1)
-                        )
                         
                         # Geometry: Backproject -> Rotate/Translate -> Project
                         cam_points = self.backproject_depth(depth, data[("inv_K")])
