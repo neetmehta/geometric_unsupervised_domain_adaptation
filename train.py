@@ -45,7 +45,7 @@ class Trainer:
         # --- Data ---
         self.device = device
         dataset = CarlaDataset(cfg)
-        self.dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=cfg.training.shuffle, num_workers=cfg.training.num_workers, pin_memory=cfg.training.pin_memory)
+        self.dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=cfg.training.shuffle, num_workers=cfg.training.num_workers, pin_memory=cfg.training.pin_memory, drop_last=cfg.training.drop_last)
         self.epoch = cfg.training.epochs
 
         # --- TensorBoard Setup ---
