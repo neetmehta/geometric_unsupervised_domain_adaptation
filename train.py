@@ -27,8 +27,9 @@ class Trainer:
         
         # --- Model Initialization ---
         self.encoder = ResnetEncoder(num_layers=cfg.model.encoder.num_layers, pretrained=cfg.model.encoder.pretrained).to(device)
-        self.decoder = DepthDecoder(self.encoder.num_ch_enc, scales=cfg.model.depth_decoder.scales).to(device)
-        self.posenet = PoseNet(num_input_images=cfg.model.pose_net.num_input_images, pretrained=cfg.model.pose_net.pretrained).to(device)
+        self.decoder = DepthDecoder(self.encoder.num_ch_enc, scales=cfg.geometry.scales).to(device)
+        self.posenet = PoseNet(num_layers=cfg.model.pose_net.num_layers, num_input_images=cfg.model.pose_net.num_input_images, pretrained=cfg.model.pose_net.pretrained).to(device)
+        self.scales = cfg.geometry.scales
         
         # --- Geometry Tools ---
         self.backproject_depth = BackprojectDepth(self.batch_size, cfg.geometry.image_height, cfg.geometry.image_width).to(device)
@@ -87,10 +88,11 @@ class Trainer:
                 
                 pose = {}
                 reprojection_loss = {}
+                identity_reprojection_loss = {}
                 
                 # Pose 1: t -> t-1
                 pose[("axisangle", -1)], pose[("translation", -1)] = self.posenet(
-                    torch.cat([data[("t", 0, 0)], data[("t", -1, 0)]], dim=1)
+                    torch.cat([data[("t", -1, 0)], data[("t", 0, 0)]], dim=1)
                 )
 
                 # Pose 2: t -> t+1
@@ -99,15 +101,13 @@ class Trainer:
                 )
 
                 total_loss = 0
-                scales = range(4)
+                scales = self.scales
                 for i in [-1, 1]:
                     pose[("T", i)] = transformation_from_parameters(
                         pose[("axisangle", i)][:,0], 
                         pose[("translation", i)][:,0], 
                         invert=(i == -1)
                     )
-                
-                    print(pose[("T", i)].detach().cpu().numpy())
                 
                 for s in scales:
                     # Upsample disparity to input resolution
@@ -128,27 +128,42 @@ class Trainer:
                         # FIX: Using 't-1' for i=-1 and 't+1' for i=1
                         source_key = ("t", -1, 0) if i == -1 else ("t", 1, 0)
                         outputs[("recons", i, s)] = F.grid_sample(
-                            data[source_key], pix_coords, padding_mode="border", align_corners=True
+                            data[source_key], pix_coords, padding_mode="border"
                         )
                         
                         reprojection_loss[(i, s)] = self.compute_reprojection_loss(
                             outputs[("recons", i, s)], data[("t", 0, 0)]
                         )
                         
+                        identity_reprojection_loss[(i, s)] = self.compute_reprojection_loss(
+                            data[("t", i, 0)], data[("t", 0, 0)]
+                        )            
+                        
                     # Combine Losses
                     reprojection_losses = torch.cat(
                         [reprojection_loss[(-1, s)], reprojection_loss[(1, s)]], dim=1
                     )
                     
+                    identity_reprojection_losses = torch.cat(
+                        [identity_reprojection_loss[(-1, s)], identity_reprojection_loss[(1,s)]], dim=1
+                    )
+                    
+                    identity_reprojection_losses += torch.randn(
+                        identity_reprojection_losses.shape, device=self.device) * 0.00001
+                    
+                    combined = torch.cat((identity_reprojection_losses, reprojection_losses), dim=1)
+                    
+                    to_optimise, idxs = torch.min(combined, dim=1)
+                    
+                    
                     # Automasking/Minimum logic usually goes here (omitted for brevity as per your snippet)
-                    reprojection_losses = reprojection_losses.mean(keepdim=True, dim=1) 
-                    total_loss += reprojection_losses.mean()
+                    total_loss += to_optimise.mean()
                     
                     # Smoothness Loss
                     mean_disp = outputs[("disp", s)].mean(2, True).mean(3, True)
                     norm_disp = outputs[("disp", s)] / (mean_disp + 1e-7)
                     smoothness_loss = get_smooth_loss(norm_disp, data[("t", 0, s)])
-                    total_loss += smoothness_loss / (2 ** s)
+                    total_loss += self.cfg.loss.smoothness_weight * smoothness_loss / (2 ** s)
                 
                 total_loss /= len(scales)
                 

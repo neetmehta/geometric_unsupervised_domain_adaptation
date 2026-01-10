@@ -15,7 +15,7 @@ class CarlaDataset(Dataset):
         ])
         self.calib = {}
         self.samples = []
-        self.scales = cfg.model.depth_decoder.scales
+        self.scales = cfg.geometry.scales
         self.resize_transform = [transforms.Compose([transforms.Resize((cfg.dataset.img_height // (2 ** s), cfg.dataset.img_width // (2 ** s))), transforms.ToTensor()]) for s in self.scales]
         for scene in glob.glob(os.path.join(root_dir, "run_*")):
             self.samples.extend(self.parse_scenes(scene))
@@ -58,5 +58,5 @@ class CarlaDataset(Dataset):
         sample[("t", 1, 0)] = self.transforms(Image.open(sample["t+1"]).convert("RGB"))
         
         sample['K'] = torch.from_numpy(self.calib[sample["scene"]]).to(torch.float32)
-        sample['inv_K'] = torch.from_numpy(np.linalg.inv(sample['K'])).to(torch.float32)
+        sample['inv_K'] = torch.from_numpy(np.linalg.pinv(sample['K'])).to(torch.float32)
         return sample
