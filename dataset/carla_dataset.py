@@ -50,13 +50,14 @@ class CarlaDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        sample = self.samples[idx]
+        sample = {}
+        paths = self.samples[idx]
         for s in self.scales:
-            sample[("t", 0, s)] = self.resize_transform[s](Image.open(sample["t"]).convert("RGB"))
-        sample[("t", 0, 0)] = self.transforms(Image.open(sample["t"]).convert("RGB"))
-        sample[("t", -1, 0)] = self.transforms(Image.open(sample["t-1"]).convert("RGB"))
-        sample[("t", 1, 0)] = self.transforms(Image.open(sample["t+1"]).convert("RGB"))
+            sample[("t", 0, s)] = self.resize_transform[s](Image.open(paths["t"]).convert("RGB"))
+        sample[("t", 0, 0)] = self.transforms(Image.open(paths["t"]).convert("RGB"))
+        sample[("t", -1, 0)] = self.transforms(Image.open(paths["t-1"]).convert("RGB"))
+        sample[("t", 1, 0)] = self.transforms(Image.open(paths["t+1"]).convert("RGB"))
         
-        sample['K'] = torch.from_numpy(self.calib[sample["scene"]]).to(torch.float32)
-        sample['inv_K'] = torch.from_numpy(np.linalg.pinv(sample['K'])).to(torch.float32)
+        sample['K'] = torch.from_numpy(self.calib[paths["scene"]]).to(torch.float32)
+        sample['inv_K'] = torch.linalg.pinv(sample['K']).to(torch.float32)
         return sample
