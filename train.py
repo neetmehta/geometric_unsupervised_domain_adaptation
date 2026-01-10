@@ -39,6 +39,8 @@ class Trainer:
         # --- Optimizer ---
         self.parameters_to_train = list(self.encoder.parameters()) + list(self.decoder.parameters()) + list(self.posenet.parameters())
         self.optimizer = optim.Adam(self.parameters_to_train, lr=cfg.training.learning_rate)
+        self.lr_scheduler =  optim.lr_scheduler.StepLR(
+            self.optimizer, self.cfg.training.scheduler_step_size, 0.1)
         
         # --- Data ---
         self.device = device
@@ -58,6 +60,7 @@ class Trainer:
     def train(self):
         num_batches = len(self.dataloader)
         global_step = 0
+        self.lr_scheduler.step()
         
         for epoch in range(self.epoch):
             self.encoder.train()
