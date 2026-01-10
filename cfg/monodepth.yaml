@@ -3,12 +3,13 @@
 # =========================
 
 training:
-  batch_size: 2
+  batch_size: 16
   epochs: 20
   learning_rate: 0.0001
-  num_workers: 0
+  num_workers: 4
   shuffle: true
   pin_memory: true
+  drop_last: true
   scheduler_step_size: 15
 
 # =========================
@@ -56,7 +57,7 @@ loss:
 dataset:
   name: TestDataset
   csv_path: eigen_full_train.csv
-  root_dir: F:\\CARLA_0.9.16\\PythonAPI\\carla_data_tools\\carla_dataset
+  root_dir: carla_dataset
   img_height: 192
   img_width: 640
 
