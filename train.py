@@ -15,7 +15,7 @@ import time
 import torchvision.utils as vutils
 from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
-import numpy as np
+import os
 
 class Trainer:
     
@@ -52,6 +52,7 @@ class Trainer:
         # Defaults to 'runs/current_time' if not specified in config
         log_dir = getattr(cfg.training, 'log_dir', None) 
         self.writer = SummaryWriter(log_dir=log_dir)
+        self.model_out = self.writer.log_dir
         
         # Frequencies
         self.log_loss_freq = cfg.tensorboard.log_loss_freq   # Log loss every 50 steps
@@ -75,6 +76,7 @@ class Trainer:
                 desc=f"Epoch [{epoch+1}/{self.epoch}]",
                 dynamic_ncols=True
             )
+            previous_loss = float('inf')
             
             for batch_idx, data in enumerate(pbar):
                 iter_start = time.time()
@@ -201,6 +203,11 @@ class Trainer:
                 f"Avg Loss: {epoch_loss / num_batches:.4f} | "
                 f"Time: {epoch_time:.1f}s"
             )
+            
+            if (epoch_loss/num_batches) < previous_loss:
+                previous_loss = epoch_loss/num_batches
+                state_dict = {"encoder": self.encoder.state_dict(), "decoder": self.decoder.state_dict(), "posenet": self.posenet.state_dict()}
+                torch.save(state_dict, os.path.join(self.model_out, f"model_{epoch}.pth"))
             
         self.writer.close()
 
