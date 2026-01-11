@@ -39,6 +39,7 @@ geometry:
   image_height: 192
   image_width: 640
   scales: [0, 1, 2, 3]
+  frames: [0, -1, 1]
 
 # =========================
 # Loss Configuration

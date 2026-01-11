@@ -35,6 +35,7 @@ class Trainer:
         self.backproject_depth = BackprojectDepth(self.batch_size, cfg.geometry.image_height, cfg.geometry.image_width).to(device)
         self.project_3d = Project3D(self.batch_size, cfg.geometry.image_height, cfg.geometry.image_width).to(device)
         self.ssim = SSIM().to(device)
+        self.frames = cfg.geometry.frames
         
         # --- Optimizer ---
         self.parameters_to_train = list(self.encoder.parameters()) + list(self.decoder.parameters()) + list(self.posenet.parameters())
@@ -78,99 +79,24 @@ class Trainer:
             )
             previous_loss = float('inf')
             
-            for batch_idx, data in enumerate(pbar):
+            for batch_idx, inputs in enumerate(pbar):
                 iter_start = time.time()
                 
-                # Move data to device
-                for key in data:
-                    if isinstance(data[key], torch.Tensor):
-                        data[key] = data[key].to(self.device)
+                # Move inputs to device
+                for key in inputs:
+                    if isinstance(inputs[key], torch.Tensor):
+                        inputs[key] = inputs[key].to(self.device)
                 
                 # --- Forward Pass ---
-                input_image = data[("t", 0, 0)]
+                input_image = inputs[("t", 0, 0)]
                 features = self.encoder(input_image)
                 outputs = self.decoder(features)
                 
-                pose = {}
-                reprojection_loss = {}
-                identity_reprojection_loss = {}
+                pose = self.predict_pose(inputs)
+                self.reconstruct_image(inputs, outputs, pose)
+                losses = self.compute_reconstruction_loss(inputs, outputs)
                 
-                # Pose 1: t -> t-1
-                pose[("axisangle", -1)], pose[("translation", -1)] = self.posenet(
-                    torch.cat([data[("t", -1, 0)], data[("t", 0, 0)]], dim=1)
-                )
-
-                # Pose 2: t -> t+1
-                pose[("axisangle", 1)], pose[("translation", 1)] = self.posenet(
-                    torch.cat([data[("t", 0, 0)], data[("t", 1, 0)]], dim=1)
-                )
-
-                total_loss = 0
-                scales = self.scales
-                for i in [-1, 1]:
-                    pose[("T", i)] = transformation_from_parameters(
-                        pose[("axisangle", i)][:,0], 
-                        pose[("translation", i)][:,0], 
-                        invert=(i == -1)
-                    )
-                
-                for s in scales:
-                    # Upsample disparity to input resolution
-                    disp = outputs[("disp", s)]
-                    disp = F.interpolate(
-                        disp, (input_image.size(2), input_image.size(3)), mode="bilinear", align_corners=False
-                    )
-                    _, depth = disp_to_depth(disp, 0.1, 100)
-                    outputs[("depth", s)] = depth
-
-                    for i in [-1, 1]:
-                        
-                        # Geometry: Backproject -> Rotate/Translate -> Project
-                        cam_points = self.backproject_depth(depth, data[("inv_K")])
-                        pix_coords = self.project_3d(cam_points, data[("K")], pose[("T", i)])
-                        
-                        # Sampling: Corrected Source Selection
-                        # FIX: Using 't-1' for i=-1 and 't+1' for i=1
-                        source_key = ("t", -1, 0) if i == -1 else ("t", 1, 0)
-                        outputs[("recons", i, s)] = F.grid_sample(
-                            data[source_key], pix_coords, padding_mode="border"
-                        )
-                        
-                        reprojection_loss[(i, s)] = self.compute_reprojection_loss(
-                            outputs[("recons", i, s)], data[("t", 0, 0)]
-                        )
-                        
-                        identity_reprojection_loss[(i, s)] = self.compute_reprojection_loss(
-                            data[("t", i, 0)], data[("t", 0, 0)]
-                        )            
-                        
-                    # Combine Losses
-                    reprojection_losses = torch.cat(
-                        [reprojection_loss[(-1, s)], reprojection_loss[(1, s)]], dim=1
-                    )
-                    
-                    identity_reprojection_losses = torch.cat(
-                        [identity_reprojection_loss[(-1, s)], identity_reprojection_loss[(1,s)]], dim=1
-                    )
-                    
-                    identity_reprojection_losses += torch.randn(
-                        identity_reprojection_losses.shape, device=self.device) * 0.00001
-                    
-                    combined = torch.cat((identity_reprojection_losses, reprojection_losses), dim=1)
-                    
-                    to_optimise, idxs = torch.min(combined, dim=1)
-                    
-                    
-                    # Automasking/Minimum logic usually goes here (omitted for brevity as per your snippet)
-                    total_loss += to_optimise.mean()
-                    
-                    # Smoothness Loss
-                    mean_disp = outputs[("disp", s)].mean(2, True).mean(3, True)
-                    norm_disp = outputs[("disp", s)] / (mean_disp + 1e-7)
-                    smoothness_loss = get_smooth_loss(norm_disp, data[("t", 0, s)])
-                    total_loss += self.cfg.loss.smoothness_weight * smoothness_loss / (2 ** s)
-                
-                total_loss /= len(scales)
+                total_loss = losses["reconstruction_loss"]
                 
                 # --- Backward Pass ---
                 self.optimizer.zero_grad()
@@ -194,7 +120,7 @@ class Trainer:
                     self.writer.add_scalar("Train/Total_Loss", total_loss.item(), global_step)
                     
                 if global_step % self.log_img_freq == 0:
-                    self.log_visuals(data, outputs, global_step)
+                    self.log_visuals(inputs, outputs, global_step)
 
             # End of Epoch
             epoch_time = time.time() - start_time
@@ -210,6 +136,100 @@ class Trainer:
                 torch.save(state_dict, os.path.join(self.model_out, f"model_{epoch}.pth"))
             
         self.writer.close()
+        
+    def predict_pose(self, inputs):
+        pose = {}
+        # Pose 1: t -> t-1
+        pose[("axisangle", -1)], pose[("translation", -1)] = self.posenet(
+            torch.cat([inputs[("t", -1, 0)], inputs[("t", 0, 0)]], dim=1)
+        )
+
+        # Pose 2: t -> t+1
+        pose[("axisangle", 1)], pose[("translation", 1)] = self.posenet(
+            torch.cat([inputs[("t", 0, 0)], inputs[("t", 1, 0)]], dim=1)
+        )
+        
+        for i in self.frames[1:]:
+            pose[("T", i)] = transformation_from_parameters(
+                pose[("axisangle", i)][:,0], 
+                pose[("translation", i)][:,0], 
+                invert=(i == -1)
+            )
+        return pose
+    
+    def reconstruct_image(self, inputs, outputs, pose):
+        
+        input_image = inputs[("t", 0, 0)]
+        for s in self.scales:
+            # Upsample disparity to input resolution
+            disp = outputs[("disp", s)]
+            disp = F.interpolate(
+                disp, (input_image.size(2), input_image.size(3)), mode="bilinear", align_corners=False
+            )
+            _, depth = disp_to_depth(disp, 0.1, 100)
+            outputs[("depth", s)] = depth
+
+            for i in self.frames[1:]:
+                
+                # Geometry: Backproject -> Rotate/Translate -> Project
+                cam_points = self.backproject_depth(depth, inputs[("inv_K")])
+                pix_coords = self.project_3d(cam_points, inputs[("K")], pose[("T", i)])
+                
+                # Sampling: Corrected Source Selection
+                # FIX: Using 't-1' for i=-1 and 't+1' for i=1
+                source_key = ("t", -1, 0) if i == -1 else ("t", 1, 0)
+                outputs[("recons", i, s)] = F.grid_sample(
+                    inputs[source_key], pix_coords, padding_mode="border"
+                )
+                
+    def compute_reconstruction_loss(self, inputs, outputs):
+        
+        losses = {}
+        reprojection_loss = {}
+        identity_reprojection_loss = {}
+        total_loss = 0
+        for s in self.scales:
+            
+            for i in self.frames[1:]:
+                
+                reprojection_loss[(i, s)] = self.compute_reprojection_loss(
+                    outputs[("recons", i, s)], inputs[("t", 0, 0)]
+                )
+                
+                identity_reprojection_loss[(i, s)] = self.compute_reprojection_loss(
+                    inputs[("t", i, 0)], inputs[("t", 0, 0)]
+                )            
+                
+            # Combine Losses
+            reprojection_losses = torch.cat(
+                [reprojection_loss[(-1, s)], reprojection_loss[(1, s)]], dim=1
+            )
+            
+            identity_reprojection_losses = torch.cat(
+                [identity_reprojection_loss[(-1, s)], identity_reprojection_loss[(1,s)]], dim=1
+            )
+            
+            identity_reprojection_losses += torch.randn(
+                identity_reprojection_losses.shape, device=self.device) * 0.00001
+            
+            combined = torch.cat((identity_reprojection_losses, reprojection_losses), dim=1)
+            
+            to_optimise, _ = torch.min(combined, dim=1)
+            
+            # Automasking/Minimum logic usually goes here (omitted for brevity as per your snippet)
+            total_loss += to_optimise.mean()
+            
+            smoothness_loss = self.compute_smoothness_loss(outputs[("disp", s)], inputs[("t", 0, s)])
+            total_loss += self.cfg.loss.smoothness_weight * smoothness_loss / (2 ** s) 
+        
+        losses["reconstruction_loss"] = total_loss / len(self.scales)
+        return losses
+            
+    def compute_smoothness_loss(self, disp, scaled_image):
+        mean_disp = disp.mean(2, True).mean(3, True)
+        norm_disp = disp / (mean_disp + 1e-7)
+        smoothness_loss = get_smooth_loss(norm_disp, scaled_image)
+        return smoothness_loss                
 
     def log_visuals(self, data, outputs, step):
         """Logs RGB, Reconstructions, and Colormapped Depth to TensorBoard"""
