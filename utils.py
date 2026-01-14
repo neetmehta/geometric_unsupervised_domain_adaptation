@@ -35,7 +35,7 @@ def load_config(config_path: str):
         "training",
         "model",
         "geometry",
-        "dataset",
+        "virtual_dataset",
         "runtime",
     ]
 

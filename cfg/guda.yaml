@@ -25,6 +25,10 @@ model:
   depth_decoder:
     type: DepthDecoder
 
+  semantic_decoder:
+    type: SemanticDecoder
+    num_classes: 29
+
   pose_net:
     type: PoseNet
     num_layers: 50
@@ -55,12 +59,15 @@ loss:
 # Dataset Configuration
 # =========================
 
-dataset:
-  name: TestDataset
-  csv_path: eigen_full_train.csv
-  root_dir: F:\\CARLA_0.9.16\\PythonAPI\\carla_data_tools\\mini_dataset
+virtual_dataset:
+  name: CarlaDataset
+  root_dir: F:\\CARLA_0.9.16\\PythonAPI\\carla_data_tools\\carla_dataset
   img_height: 192
   img_width: 640
+  depth: true
+  semantic: true
+  min_depth: 0.1
+  max_depth: 100.0
 
 # =========================
 # Runtime
