@@ -1,51 +1,70 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
+
+from collections import OrderedDict
+from .layers import Conv3x3, ConvBlock, upsample
 
 class SemanticDecoder(nn.Module):
     def __init__(self, num_ch_enc, num_classes):
-        """
-        num_ch_enc: list of encoder channels, e.g. [64, 64, 128, 256, 512]
-        num_classes: number of semantic classes
+        """Initialize SemanticDecoder.
+        
+        Args:
+            num_ch_enc (list): List of encoder channels, e.g. [64, 64, 128, 256, 512].
+            num_classes (int): Number of semantic classes for output segmentation.
         """
         super().__init__()
 
-        self.scales = [1, 2, 3, 4]  # use 4 deepest scales
+        self.num_ch_enc = num_ch_enc
+        self.num_ch_dec = np.array([16, 32, 64, 128, 256])
+        self.final_channel_in = 0
 
-        self.reduce_convs = nn.ModuleList([
-            nn.Conv2d(num_ch_enc[i], 128, kernel_size=1)
-            for i in self.scales
-        ])
+        # decoder
+        self.convs = OrderedDict()
+        for i in range(4, -1, -1):
+            # upconv_0
+            num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i + 1]
+            num_ch_out = self.num_ch_dec[i]
+            self.convs[("upconv", i, 0)] = ConvBlock(num_ch_in, num_ch_out)
 
-        self.final_conv = nn.Conv2d(
-            128 * len(self.scales),
-            num_classes,
-            kernel_size=3,
-            padding=1
-        )
+            # upconv_1
+            num_ch_in = self.num_ch_dec[i]
+            if i > 0:
+                num_ch_in += self.num_ch_enc[i - 1]
+            num_ch_out = self.num_ch_dec[i]
+            self.convs[("upconv", i, 1)] = ConvBlock(num_ch_in, num_ch_out)
+            
+            if i != 4:
+                self.final_channel_in += self.num_ch_dec[i]
+                
+        self.convs[("final_conv", 0)] = Conv3x3(self.final_channel_in, num_classes)
+        self.decoder = nn.ModuleList(list(self.convs.values()))
 
     def forward(self, features):
+        """Generate semantic logits from encoder features.
+        
+        Args:
+            features (list): List of encoder feature maps.
+        
+        Returns:
+            torch.Tensor: Semantic segmentation logits of shape [B, num_classes, H, W].
         """
-        features: list of encoder feature maps
-        """
-        target_size = features[self.scales[0]].shape[2:]  # highest resolution
-
-        upsampled_feats = []
-
-        for i, scale in enumerate(self.scales):
-            x = self.reduce_convs[i](features[scale])
-
-            if x.shape[2:] != target_size:
-                x = F.interpolate(
-                    x,
-                    size=target_size,
-                    mode="bilinear",
-                    align_corners=False
-                )
-
-            upsampled_feats.append(x)
-
-        x = torch.cat(upsampled_feats, dim=1)
-        logits = self.final_conv(x)
+        x = features[-1]
+        intermediate_features = []
+        
+        for i in range(4,-1,-1):
+            x = self.convs[("upconv", i, 0)](x)
+            x = [upsample(x)]
+            
+            if i>0:
+                x += [features[i-1]]
+                
+            x = torch.cat(x,1)
+            x = self.convs[("upconv", i, 1)](x)
+            if i!=4:
+                intermediate_features.append(F.interpolate(x, scale_factor=2**i, mode="nearest"))
+            
+        logits = self.convs[("final_conv", 0)](torch.cat(intermediate_features, 1))
 
         return logits

@@ -19,8 +19,18 @@ import matplotlib.pyplot as plt
 import os
 
 class Trainer:
+    """Main training class for unsupervised domain adaptation using geometric constraints.
+    
+    Handles model initialization, training loop, loss computation, and visualization.
+    Supports depth, semantic segmentation, and pose estimation tasks.
+    """
     
     def __init__(self, cfg_path):
+        """Initialize the Trainer with configuration.
+        
+        Args:
+            cfg_path (str): Path to YAML configuration file.
+        """
         cfg = load_config(cfg_path)
         self.cfg = cfg
         self.batch_size = cfg.training.batch_size
@@ -66,6 +76,11 @@ class Trainer:
         self.log_img_freq = cfg.tensorboard.log_img_freq   # Log images every 500 steps
 
     def train(self):
+        """Execute the main training loop for all epochs.
+        
+        Performs forward pass, computes losses, backward pass, and logs metrics.
+        Saves checkpoint if validation loss improves.
+        """
         num_batches = len(self.dataloader)
         global_step = 0
         self.lr_scheduler.step()
@@ -156,6 +171,14 @@ class Trainer:
         self.writer.close()
         
     def predict_pose(self, inputs):
+        """Predict relative poses between current frame and adjacent frames.
+        
+        Args:
+            inputs (dict): Dictionary containing input image tensors with keys like ('t', frame_id, scale).
+        
+        Returns:
+            dict: Pose dictionary with keys ('axisangle', frame_id), ('translation', frame_id), and ('T', frame_id).
+        """
         pose = {}
         # Pose 1: t -> t-1
         pose[("axisangle", -1)], pose[("translation", -1)] = self.posenet(
@@ -176,6 +199,15 @@ class Trainer:
         return pose
     
     def reconstruct_image(self, inputs, outputs, pose):
+        """Reconstruct source frames into current frame using geometry and pose.
+        
+        Performs 3D backprojection, transformation based on pose, and reprojection.
+        
+        Args:
+            inputs (dict): Input tensors including RGB and calibration matrices.
+            outputs (dict): Output dictionary to store reconstructed frames and depth.
+            pose (dict): Pose transformations between frames.
+        """
         
         input_image = inputs[("t", 0, 0)]
         for s in self.scales:
@@ -201,6 +233,13 @@ class Trainer:
                 )
                 
     def compute_reconstruction_loss(self, inputs, outputs):
+        """Compute photometric reconstruction loss for unsupervised depth learning.
+        
+        Combines reprojection loss with identity consistency and smoothness regularization.
+        
+        Returns:
+            dict: Dictionary containing total reconstruction loss.
+        """
         
         losses = {}
         reprojection_loss = {}
@@ -244,18 +283,44 @@ class Trainer:
         return losses
             
     def compute_smoothness_loss(self, disp, scaled_image):
+        """Compute smoothness regularization loss for disparity maps.
+        
+        Args:
+            disp (torch.Tensor): Disparity map of shape [B, 1, H, W].
+            scaled_image (torch.Tensor): Image tensor for computing gradients.
+        
+        Returns:
+            torch.Tensor: Smoothness loss value.
+        """
         mean_disp = disp.mean(2, True).mean(3, True)
         norm_disp = disp / (mean_disp + 1e-7)
         smoothness_loss = get_smooth_loss(norm_disp, scaled_image)
         return smoothness_loss             
     
     def compute_semantic_loss(self, outputs, gt):
+        """Compute semantic segmentation loss using bootstrapped cross-entropy.
+        
+        Args:
+            outputs (torch.Tensor): Semantic predictions of shape [B, num_classes, H, W].
+            gt (torch.Tensor): Ground truth semantic labels of shape [B, H, W].
+        
+        Returns:
+            dict: Dictionary containing semantic loss.
+        """
         return {"semantic_loss": self.bootstraped_cross_entropy_loss(outputs, gt)} 
     
     def compute_gt_depth_loss(self, disps, gt_depth, lam=0.85):
-        """
-        pred_depth: [B, 1, H, W]
-        gt_depth:   [B, 1, H, W]
+        """Compute supervised depth loss using log-scale consistency.
+        
+        Uses ground truth depth for computing scale-invariant loss.
+        
+        Args:
+            disps (dict): Dictionary containing disparity predictions with key ('disp', 0).
+            gt_depth (torch.Tensor): Ground truth depth map of shape [B, 1, H, W].
+            lam (float): Weight for scale ambiguity term. Default: 0.85.
+        
+        Returns:
+            dict: Dictionary containing gt_depth_loss.
         """
         eps = 1e-6
         min_depth = self.cfg.virtual_dataset.min_depth
@@ -278,6 +343,16 @@ class Trainer:
         return {"gt_depth_loss": loss}
     
     def compute_surface_normal_loss(self, disps, gt_depth, inv_k):
+        """Compute surface normal consistency loss.
+        
+        Args:
+            disps (dict): Dictionary containing disparity predictions.
+            gt_depth (torch.Tensor): Ground truth depth map.
+            inv_k (torch.Tensor): Inverse camera intrinsic matrix.
+        
+        Returns:
+            dict: Dictionary containing surface_normal_loss.
+        """
         
         min_depth = self.cfg.virtual_dataset.min_depth
         max_depth = self.cfg.virtual_dataset.max_depth
@@ -288,11 +363,30 @@ class Trainer:
         return {"surface_normal_loss": loss}
     
     def compute_partial_photometric_loss(self, inputs, depth_outputs, pose, gt_depth):
+        """Compute partial photometric loss for domain-specific adaptation.
+        
+        Args:
+            inputs (dict): Input tensors.
+            depth_outputs (dict): Depth predictions.
+            pose (dict): Pose transformations.
+            gt_depth (torch.Tensor): Ground truth depth.
+        
+        Returns:
+            dict: Dictionary containing partial photometric loss.
+        """
         pass
   
 
     def log_visuals(self, data, outputs, step):
-        """Logs RGB, Reconstructions, and Colormapped Depth to TensorBoard"""
+        """Log RGB, reconstructions, and depth visualizations to TensorBoard.
+        
+        Creates a combined visualization showing input RGB, reconstructed image, and depth.
+        
+        Args:
+            data (dict): Input data dictionary containing RGB images.
+            outputs (dict): Model outputs containing reconstructions and depth.
+            step (int): Global training step for logging.
+        """
         
         # 1. Input RGB Image (Batch index 0)
         input_rgb = data[("t",0, 0)][0] # [3, H, W]
@@ -321,13 +415,25 @@ class Trainer:
         self.writer.add_image("Train/Input_Recons_Depth", grid, step)
 
     def compute_reprojection_loss(self, pred, target):
-        """Computes reprojection loss between a batch of predicted and target images"""
+        """Compute photometric reprojection loss using SSIM and L1 loss.
+        
+        Args:
+            pred (torch.Tensor): Predicted/reconstructed image of shape [B, 3, H, W].
+            target (torch.Tensor): Target image of shape [B, 3, H, W].
+        
+        Returns:
+            torch.Tensor: Per-pixel reprojection loss of shape [B, 1, H, W].
+        """
         l1_loss = torch.abs(target - pred).mean(1, True)
         ssim_loss = self.ssim(pred, target).mean(1, True)
         reprojection_loss = 0.85 * ssim_loss + 0.15 * l1_loss
         return reprojection_loss
     
 def main():
+    """Main entry point for training script.
+    
+    Parses command-line arguments and initializes the Trainer.
+    """
     parser = argparse.ArgumentParser(description="Monodepth2-style Trainer")
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config file")
     args = parser.parse_args()

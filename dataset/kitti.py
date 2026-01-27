@@ -8,8 +8,20 @@ from torch.utils.data import Dataset
 import random
 to_tensor = transforms.Compose([transforms.Resize((384, 1248)), transforms.ToTensor()])
 class KittiOdom(Dataset):
+    """KITTI Odometry dataset loader for monocular depth and pose estimation.
+    
+    Provides stereo-calibrated frame sequences for unsupervised learning.
+    """
 
     def __init__(self, csv_path, root, resize=(384,1248), scales=[0,1,2,3]) -> None:
+        """Initialize KITTI Odometry dataset.
+        
+        Args:
+            csv_path (str): Path to CSV file listing frame triplets.
+            root (str): Root directory containing image data.
+            resize (tuple): Target image size (height, width). Default: (384, 1248).
+            scales (list): Scales for multi-scale processing. Default: [0,1,2,3].
+        """
         super(KittiOdom, self).__init__()
 
         self.scales = scales
@@ -28,9 +40,19 @@ class KittiOdom(Dataset):
         self.resize = [transforms.Resize((resize[0] // (2**s), resize[1] // (2**s))) for s in self.scales]
 
     def __len__(self):
+        """Return number of samples in dataset."""
         return len(self.img_list)
 
     def __getitem__(self, index):
+        """Get a sample containing frame triplet and calibration matrices.
+        
+        Args:
+            index (int): Sample index.
+        
+        Returns:
+            dict: Dictionary with keys ('t-1', 0), ('t', 0), ('t+1', 0) for RGB frames,
+                  and 'K', 'inv_K' for calibration matrices.
+        """
         sample = {}
         while (
             not os.path.exists(
@@ -60,8 +82,19 @@ class KittiOdom(Dataset):
         return sample
 
 class KittiStereo(Dataset):
+    """KITTI Stereo dataset loader for supervised depth evaluation.
+    
+    Provides stereo image pairs for computing ground truth depth via triangulation.
+    """
 
     def __init__(self, csv_path, root, resize=(384,1248)) -> None:
+        """Initialize KITTI Stereo dataset.
+        
+        Args:
+            csv_path (str): Path to CSV file listing stereo pairs.
+            root (str): Root directory containing image data.
+            resize (tuple): Target image size (height, width). Default: (384, 1248).
+        """
         super(KittiStereo, self).__init__()
         self.root = root
         self.img_list = pd.read_csv(csv_path)
@@ -77,9 +110,19 @@ class KittiStereo(Dataset):
         self.to_tensor = transforms.Compose([transforms.Resize(resize), transforms.ToTensor()])
 
     def __len__(self):
+        """Return number of stereo pairs in dataset."""
         return len(self.img_list)
 
     def __getitem__(self, index):
+        """Get stereo image pair and calibration matrices.
+        
+        Args:
+            index (int): Sample index.
+        
+        Returns:
+            dict: Dictionary with keys 'source' and 'target' for stereo images,
+                  and 'K', 'inv_K' for calibration matrices.
+        """
         sample = {}
         source = Image.open(os.path.join(self.root,self.img_list.iloc[index]['source']))
         target = list(self.img_list.iloc[index]['source'])

@@ -11,7 +11,18 @@ import torch.nn as nn
 
 
 class PoseCNN(nn.Module):
+    """Simple CNN-based pose estimator for predicting 6-DOF poses from image sequences.
+    
+    Monodepth2-compatible pose estimation network with stride-2 convolutions
+    and global average pooling.
+    """
+    
     def __init__(self, num_input_frames):
+        """Initialize PoseCNN.
+        
+        Args:
+            num_input_frames (int): Number of input frames (determines output dimensions).
+        """
         super(PoseCNN, self).__init__()
 
         self.num_input_frames = num_input_frames
@@ -34,10 +45,14 @@ class PoseCNN(nn.Module):
         self.net = nn.ModuleList(list(self.convs.values()))
 
     def forward(self, out):
-
-        for i in range(self.num_convs):
-            out = self.convs[i](out)
-            out = self.relu(out)
+        """Predict pose parameters from stacked image sequence.
+        
+        Args:
+            out (torch.Tensor): Concatenated frames of shape [B, 3*num_frames, H, W].
+        
+        Returns:
+            tuple: (axisangle [B, num_frames-1, 1, 3], translation [B, num_frames-1, 1, 3]).
+        """
 
         out = self.pose_conv(out)
         out = out.mean(3).mean(2)

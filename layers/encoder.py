@@ -13,6 +13,14 @@ class ResNetMultiImageInput(models.ResNet):
     """
 
     def __init__(self, block, layers, num_classes=1000, num_input_images=1):
+        """Initialize ResNetMultiImageInput with multi-channel input support.
+        
+        Args:
+            block: ResNet block class (BasicBlock or Bottleneck).
+            layers (list): Number of blocks in each layer.
+            num_classes (int): Number of output classes. Default: 1000.
+            num_input_images (int): Number of input images to concatenate. Default: 1.
+        """
         super(ResNetMultiImageInput, self).__init__(block, layers)
         self.inplanes = 64
         self.conv1 = nn.Conv2d(
@@ -35,11 +43,15 @@ class ResNetMultiImageInput(models.ResNet):
 
 
 def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1):
-    """Constructs a ResNet model.
+    """Construct a ResNet model supporting multi-image input.
+    
     Args:
-        num_layers (int): Number of resnet layers. Must be 18 or 50
-        pretrained (bool): If True, returns a model pre-trained on ImageNet
-        num_input_images (int): Number of frames stacked as input
+        num_layers (int): Number of resnet layers (18, 34, 50, 101, or 152).
+        pretrained (bool): If True, returns a model pre-trained on ImageNet. Default: False.
+        num_input_images (int): Number of frames stacked as input. Default: 1.
+    
+    Returns:
+        nn.Module: ResNet model with adapted first conv layer for multi-image input.
     """
     assert num_layers in [
         18,
@@ -85,9 +97,20 @@ def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1):
 
 
 class ResnetEncoder(nn.Module):
-    """Pytorch module for a resnet encoder"""
+    """ResNet-based encoder for extracting multi-scale feature representations.
+    
+    Supports various ResNet depths (18, 34, 50, 101, 152) with optional multi-image input.
+    Returns feature maps at 5 different scales.
+    """
 
     def __init__(self, num_layers, pretrained, num_input_images=1):
+        """Initialize ResNet encoder.
+        
+        Args:
+            num_layers (int): Depth of ResNet (18, 34, 50, 101, or 152).
+            pretrained (bool): Whether to load ImageNet pretrained weights.
+            num_input_images (int): Number of input images. Default: 1.
+        """
         super(ResnetEncoder, self).__init__()
 
         self.num_ch_enc = np.array([64, 64, 128, 256, 512])
@@ -116,8 +139,14 @@ class ResnetEncoder(nn.Module):
             self.num_ch_enc[1:] *= 4
 
     def forward(self, input_image):
-        self.features = []
-        x = (input_image - 0.45) / 0.225
+        """Extract multi-scale features from input image.
+        
+        Args:
+            input_image (torch.Tensor): Input image tensor of shape [B, C, H, W].
+        
+        Returns:
+            list: List of 5 feature maps at different scales.
+        """
         x = self.encoder.conv1(x)
         x = self.encoder.bn1(x)
         self.features.append(self.encoder.relu(x))
