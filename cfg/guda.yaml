@@ -54,6 +54,10 @@ loss:
   ssim_weight: 0.85
   l1_weight: 0.15
   smoothness_weight: 0.001
+  semantic_weight: 0.001
+  surface_normal_weight: 0.01
+  partial_photometric_weight: 0.005
+  supervised_depth_weight: 0.1
 
 # =========================
 # Dataset Configuration
@@ -61,7 +65,18 @@ loss:
 
 virtual_dataset:
   name: CarlaDataset
-  root_dir: F:\\CARLA_0.9.16\\PythonAPI\\carla_data_tools\\carla_dataset
+  root_dir: carla_data_tools/carla_dataset
+  img_height: 192
+  img_width: 640
+  depth: true
+  semantic: true
+  transforms: true
+  min_depth: 0.1
+  max_depth: 100.0
+
+target_dataset:
+  name: CityscapesDataset
+  root_dir: cityscapes
   img_height: 192
   img_width: 640
   depth: true

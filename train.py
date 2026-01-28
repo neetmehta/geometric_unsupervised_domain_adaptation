@@ -1,6 +1,5 @@
 import torch
-from dataset.kitti import KittiOdom
-from dataset.carla_dataset import CarlaDataset
+from dataset.guda_dataset import GudaDataset
 from torch.utils.data import DataLoader
 from layers.encoder import ResnetEncoder
 from layers.depth_decoder import DepthDecoder
@@ -51,7 +50,7 @@ class Trainer:
         
         # --- Data ---
         self.device = device
-        dataset = CarlaDataset(cfg)
+        dataset = GudaDataset(cfg)
         self.dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=cfg.training.shuffle, num_workers=cfg.training.num_workers, pin_memory=cfg.training.pin_memory, drop_last=cfg.training.drop_last)
         self.epoch = cfg.training.epochs
 
@@ -86,18 +85,25 @@ class Trainer:
             )
             previous_loss = float('inf')
             
-            for batch_idx, inputs in enumerate(pbar):
+            for batch_idx, (virtuals_inputs, targets_inputs) in enumerate(pbar):
                 iter_start = time.time()
                 
                 # Move inputs to device
-                for key in inputs:
-                    if isinstance(inputs[key], torch.Tensor):
-                        inputs[key] = inputs[key].to(self.device)
+                for key in virtuals_inputs:
+                    if isinstance(virtuals_inputs[key], torch.Tensor):
+                        virtuals_inputs[key] = virtuals_inputs[key].to(self.device)
+                        
+                for key in targets_inputs:
+                    if isinstance(targets_inputs[key], torch.Tensor):
+                        targets_inputs[key] = targets_inputs[key].to(self.device)
                 
                 # --- Forward Pass ---
-                virtual_loss_dict = self.process_virtual_batch(inputs)
-                virtual_loss = sum(virtual_loss_dict.values())
-                total_loss = virtual_loss
+                virtual_loss_dict = self.process_virtual_batch(virtuals_inputs)
+                virtual_loss = self.cfg.loss.semantic_weight * virtual_loss_dict["semantic_loss"] + self.cfg.loss.supervised_depth_weight * virtual_loss_dict["gt_depth_loss"] + self.cfg.loss.surface_normal_weight * virtual_loss_dict["surface_normal_loss"] + self.cfg.loss.partial_photometric_weight * virtual_loss_dict["partial_photometric_loss"]
+                
+                target_loss_dict = self.process_target_batch(targets_inputs)
+                target_loss = target_loss_dict["reconstruction_loss"]
+                total_loss = virtual_loss + target_loss
                 
                 # --- Backward Pass ---
                 self.optimizer.zero_grad()
@@ -138,6 +144,18 @@ class Trainer:
             
         self.writer.close()
         
+    def process_target_batch(self, inputs):
+        losses = {}
+        input_image = inputs[("t", 0, 0)]
+        features = self.encoder(input_image)
+        depth_outputs = self.depth_decoder(features)
+        semantic_outputs = self.semantic_decoder(features)
+        
+        pose = self.predict_pose(inputs)
+        self.reconstruct_image(inputs, depth_outputs, pose)
+        losses.update(self.compute_reconstruction_loss(inputs, depth_outputs))
+        return losses
+        
     def process_virtual_batch(self, inputs):
         losses = {}
         input_image = inputs[("t", 0, 0)]
@@ -147,8 +165,6 @@ class Trainer:
         
         pose = self.predict_pose(inputs)
         self.reconstruct_image(inputs, depth_outputs, pose)
-        
-        losses.update(self.compute_reconstruction_loss(inputs, depth_outputs))
 
         losses.update(self.compute_semantic_loss(semantic_outputs, inputs[('semantic', 0,0)]))
         
