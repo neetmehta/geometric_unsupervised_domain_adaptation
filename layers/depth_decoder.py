@@ -6,21 +6,7 @@ from collections import OrderedDict
 from .layers import Conv3x3, ConvBlock, upsample
 
 class DepthDecoder(nn.Module):
-    """Decoder for generating multi-scale depth/disparity predictions.
-    
-    Uses upsampling and skip connections to progressively increase spatial resolution
-    while refining depth estimates.
-    """
-    
     def __init__(self, num_ch_enc, scales=range(4), num_output_channels=1, use_skips=True):
-        """Initialize DepthDecoder.
-        
-        Args:
-            num_ch_enc (list): Number of channels for each encoder layer.
-            scales (list): Scales at which to output disparity. Default: range(4).
-            num_output_channels (int): Number of output channels. Default: 1 (disparity).
-            use_skips (bool): Whether to use skip connections from encoder. Default: True.
-        """
         super(DepthDecoder, self).__init__()
 
         self.num_output_channels = num_output_channels
@@ -53,14 +39,10 @@ class DepthDecoder(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, input_features):
-        """Generate multi-scale disparity predictions from encoder features.
-        
-        Args:
-            input_features (list): List of encoder feature maps from coarse to fine.
-        
-        Returns:
-            dict: Dictionary mapping ('disp', scale) to disparity predictions [B, 1, H, W].
-        """
+        self.outputs = {}
+
+        # decoder
+        x = input_features[-1]
         for i in range(4, -1, -1):
             x = self.convs[("upconv", i, 0)](x)
             x = [upsample(x)]

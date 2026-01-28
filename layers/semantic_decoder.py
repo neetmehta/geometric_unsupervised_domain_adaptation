@@ -1,70 +1,80 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
-from collections import OrderedDict
-from .layers import Conv3x3, ConvBlock, upsample
+class ConvELUupsample(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.elu = nn.ELU()
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.elu(x)
+        x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+        return x
 
 class SemanticDecoder(nn.Module):
     def __init__(self, num_ch_enc, num_classes):
-        """Initialize SemanticDecoder.
-        
-        Args:
-            num_ch_enc (list): List of encoder channels, e.g. [64, 64, 128, 256, 512].
-            num_classes (int): Number of semantic classes for output segmentation.
+        """
+        num_ch_enc: list of encoder channels, e.g. [64, 64, 128, 256, 512]
+        num_classes: number of semantic classes
         """
         super().__init__()
 
-        self.num_ch_enc = num_ch_enc
-        self.num_ch_dec = np.array([16, 32, 64, 128, 256])
-        self.final_channel_in = 0
-
-        # decoder
-        self.convs = OrderedDict()
-        for i in range(4, -1, -1):
-            # upconv_0
-            num_ch_in = self.num_ch_enc[-1] if i == 4 else self.num_ch_dec[i + 1]
-            num_ch_out = self.num_ch_dec[i]
-            self.convs[("upconv", i, 0)] = ConvBlock(num_ch_in, num_ch_out)
-
-            # upconv_1
-            num_ch_in = self.num_ch_dec[i]
-            if i > 0:
-                num_ch_in += self.num_ch_enc[i - 1]
-            num_ch_out = self.num_ch_dec[i]
-            self.convs[("upconv", i, 1)] = ConvBlock(num_ch_in, num_ch_out)
+        self.scales = [1, 2, 3, 4]  # use 4 deepest scales
+        self.conv_elu_upsample = nn.ModuleList()
+        self.convs = nn.ModuleList()
+        final_ch = 0
+        conv_elu_upsample_in_ch = num_ch_enc[-1]
+        for i, _ in enumerate(num_ch_enc[::-1]):
             
-            if i != 4:
-                self.final_channel_in += self.num_ch_dec[i]
+            self.conv_elu_upsample.append(
+                ConvELUupsample(conv_elu_upsample_in_ch, int(256/2**i))
+            )
+            if i < len(num_ch_enc) - 1:
+                self.convs.append(
+                    nn.Conv2d(int(256/2**i) + num_ch_enc[::-1][i+1], int(256/2**i), kernel_size=3, padding=1)
+                )
+            conv_elu_upsample_in_ch = int(256/2**i)
+            
+            if i == len(num_ch_enc) - 1:
+                self.convs.append(
+                    nn.Conv2d(int(256/2**i), int(256/2**i), kernel_size=3, padding=1)
+                )
                 
-        self.convs[("final_conv", 0)] = Conv3x3(self.final_channel_in, num_classes)
-        self.decoder = nn.ModuleList(list(self.convs.values()))
+            if i>0:
+                final_ch += int(256/2**i)
+        
+
+        self.final_conv = nn.Conv2d(
+            final_ch,
+            num_classes,
+            kernel_size=3,
+            padding=1
+        )
+
 
     def forward(self, features):
-        """Generate semantic logits from encoder features.
-        
-        Args:
-            features (list): List of encoder feature maps.
-        
-        Returns:
-            torch.Tensor: Semantic segmentation logits of shape [B, num_classes, H, W].
         """
-        x = features[-1]
-        intermediate_features = []
-        
-        for i in range(4,-1,-1):
-            x = self.convs[("upconv", i, 0)](x)
-            x = [upsample(x)]
-            
-            if i>0:
-                x += [features[i-1]]
+        features: list of encoder feature maps
+        """
+        features_list = []
+        for i in range(5):
+            if i == 0:
+                x = features[-1]
+            x = self.conv_elu_upsample[i](x)
                 
-            x = torch.cat(x,1)
-            x = self.convs[("upconv", i, 1)](x)
-            if i!=4:
-                intermediate_features.append(F.interpolate(x, scale_factor=2**i, mode="nearest"))
-            
-        logits = self.convs[("final_conv", 0)](torch.cat(intermediate_features, 1))
+            if i < 4:
+                x = torch.cat([x, features[-(i+2)]], dim=1)
+                x = self.convs[i](x)
+                
+            if i==4:
+                x = self.convs[i](x)
+                
+            if i>0:
+                features_list.append(F.interpolate(x, scale_factor=2**(4-i), mode='bilinear', align_corners=False))
 
-        return logits
+        x = torch.cat(features_list, dim=1)
+        x = self.final_conv(x)
+        return x
