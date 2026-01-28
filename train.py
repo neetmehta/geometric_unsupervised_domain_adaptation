@@ -88,7 +88,6 @@ class Trainer:
             
             for batch_idx, inputs in enumerate(pbar):
                 iter_start = time.time()
-                losses = {}
                 
                 # Move inputs to device
                 for key in inputs:
@@ -96,24 +95,8 @@ class Trainer:
                         inputs[key] = inputs[key].to(self.device)
                 
                 # --- Forward Pass ---
-                input_image = inputs[("t", 0, 0)]
-                features = self.encoder(input_image)
-                depth_outputs = self.depth_decoder(features)
-                semantic_outputs = self.semantic_decoder(features)
-                
-                pose = self.predict_pose(inputs)
-                self.reconstruct_image(inputs, depth_outputs, pose)
-                losses.update(self.compute_reconstruction_loss(inputs, depth_outputs))
-
-                losses.update(self.compute_semantic_loss(semantic_outputs, inputs[('semantic', 0,0)]))
-                
-                losses.update(self.compute_gt_depth_loss(depth_outputs, inputs[("depth", 0, 0)]))
-                
-                losses.update(self.compute_surface_normal_loss(depth_outputs, inputs[("depth", 0, 0)], inputs["inv_K"]))
-                
-                virtual_loss = losses["gt_depth_loss"] + 0.001*losses["semantic_loss"] + 0.01*losses["surface_normal_loss"] + 0.05*losses["reconstruction_loss"]
-                # real_loss = losses["reconstruction_loss"]
-                
+                virtual_loss_dict = self.process_virtual_batch(inputs)
+                virtual_loss = sum(virtual_loss_dict.values())
                 total_loss = virtual_loss
                 
                 # --- Backward Pass ---
@@ -155,6 +138,28 @@ class Trainer:
             
         self.writer.close()
         
+    def process_virtual_batch(self, inputs):
+        losses = {}
+        input_image = inputs[("t", 0, 0)]
+        features = self.encoder(input_image)
+        depth_outputs = self.depth_decoder(features)
+        semantic_outputs = self.semantic_decoder(features)
+        
+        pose = self.predict_pose(inputs)
+        self.reconstruct_image(inputs, depth_outputs, pose)
+        
+        losses.update(self.compute_reconstruction_loss(inputs, depth_outputs))
+
+        losses.update(self.compute_semantic_loss(semantic_outputs, inputs[('semantic', 0,0)]))
+        
+        losses.update(self.compute_gt_depth_loss(depth_outputs, inputs[("depth", 0, 0)]))
+        
+        losses.update(self.compute_surface_normal_loss(depth_outputs, inputs[("depth", 0, 0)], inputs["inv_K"]))
+        
+        losses.update(self.compute_partial_photometric_loss(inputs, depth_outputs, pose))
+        
+        return losses
+        
     def predict_pose(self, inputs):
         pose = {}
         # Pose 1: t -> t-1
@@ -174,6 +179,24 @@ class Trainer:
                 invert=(i == -1)
             )
         return pose
+    
+    def reconstruct_image_from_depth(self, inputs, outputs, pose, scales):
+        
+        resonstructed_image = {}
+        for s in scales:
+            
+            for i in self.frames[1:]:
+                # Backproject depth to 3D points
+                cam_points = self.backproject_depth(outputs[("depth", 0, s)], inputs[("inv_K")])
+                # Project 3D points into the other view
+                pix_coords = self.project_3d(cam_points, inputs[("K")], pose[("T", i)])
+                # Sampling: Corrected Source Selection
+                # FIX: Using 't-1' for i=-1 and 't+1' for i=1
+                source_key = ("t", -1, 0) if i == -1 else ("t", 1, 0)
+                resonstructed_image[("recons", i, s)] = F.grid_sample(
+                            inputs[source_key], pix_coords, padding_mode="border"
+                        )
+        return resonstructed_image
     
     def reconstruct_image(self, inputs, outputs, pose):
         
@@ -200,7 +223,7 @@ class Trainer:
                     inputs[source_key], pix_coords, padding_mode="border"
                 )
                 
-    def compute_reconstruction_loss(self, inputs, outputs):
+    def compute_reconstruction_loss(self, inputs, outputs, compute_smoothness_loss=True):
         
         losses = {}
         reprojection_loss = {}
@@ -236,13 +259,13 @@ class Trainer:
             
             # Automasking/Minimum logic usually goes here (omitted for brevity as per your snippet)
             total_loss += to_optimise.mean()
-            
-            smoothness_loss = self.compute_smoothness_loss(outputs[("disp", s)], inputs[("t", 0, s)])
-            total_loss += self.cfg.loss.smoothness_weight * smoothness_loss / (2 ** s) 
+            if compute_smoothness_loss:
+                smoothness_loss = self.compute_smoothness_loss(outputs[("disp", s)], inputs[("t", 0, s)])
+                total_loss += self.cfg.loss.smoothness_weight * smoothness_loss / (2 ** s) 
         
         losses["reconstruction_loss"] = total_loss / len(self.scales)
         return losses
-            
+        
     def compute_smoothness_loss(self, disp, scaled_image):
         mean_disp = disp.mean(2, True).mean(3, True)
         norm_disp = disp / (mean_disp + 1e-7)
@@ -287,8 +310,25 @@ class Trainer:
         loss = self.surface_normal_loss(pred_depth, gt_depth, inv_k)
         return {"surface_normal_loss": loss}
     
-    def compute_partial_photometric_loss(self, inputs, depth_outputs, pose, gt_depth):
-        pass
+    def compute_partial_photometric_loss(self, inputs, depth_outputs, pose):
+        
+        self.reconstruct_image(inputs, depth_outputs, pose)
+        pred_depth_pred_pose_loss = self.compute_reconstruction_loss(inputs, depth_outputs)
+        
+        # Reconstruct using ground truth pose
+        self.reconstruct_image(inputs, depth_outputs, inputs)
+        pred_depth_gt_pose_loss = self.compute_reconstruction_loss(inputs, depth_outputs)
+        
+        # Reconstruct using ground truth depth
+        gt_depth_outputs = self.reconstruct_image_from_depth(inputs, inputs, pose, [0])
+        temp_scales = self.scales
+        self.scales = [0]
+        gt_depth_pred_pose_loss = self.compute_reconstruction_loss(inputs, gt_depth_outputs, False)
+        self.scales = temp_scales
+        
+        total_loss = (pred_depth_pred_pose_loss["reconstruction_loss"] + pred_depth_gt_pose_loss["reconstruction_loss"] + gt_depth_pred_pose_loss["reconstruction_loss"])/3
+        
+        return {"partial_photometric_loss": total_loss}
   
 
     def log_visuals(self, data, outputs, step):

@@ -31,6 +31,12 @@ class CarlaDataset(Dataset):
             transforms.Resize((cfg.virtual_dataset.img_height, cfg.virtual_dataset.img_width)),
             transforms.ToTensor(),
         ])
+        self.T_unreal_to_vision = np.array([
+            [0,  1,  0,  0],  # New X is Old Y
+            [0,  0, -1,  0],  # New Y is -Old Z
+            [1,  0,  0,  0],  # New Z is Old X
+            [0,  0,  0,  1]
+        ])
         self.calib = {}
         self.samples = []
         self.scales = cfg.geometry.scales
@@ -146,7 +152,7 @@ class CarlaDataset(Dataset):
         
         if self.cfg.virtual_dataset.depth:
             depth = self.load_depth(os.path.join(paths["base_name"], "depth", f"{paths['frame_id']}.npy"))
-            depth = torch.from_numpy(depth)
+            depth = torch.from_numpy(depth).to(torch.float32)
             sample[("depth", 0, 0)] = F.interpolate(depth.unsqueeze(0).unsqueeze(0), size=(self.cfg.virtual_dataset.img_height, self.cfg.virtual_dataset.img_width), mode='bilinear', align_corners=False).squeeze(0)   
             
         if self.cfg.virtual_dataset.semantic:
@@ -154,6 +160,14 @@ class CarlaDataset(Dataset):
             semantic_image = cv2.resize(semantic_image, (self.cfg.virtual_dataset.img_width, self.cfg.virtual_dataset.img_height), 0, 0, interpolation=cv2.INTER_NEAREST)
             semantic_image = cv2.cvtColor(semantic_image, cv2.COLOR_BGR2RGB)
             sample[("semantic", 0, 0)] = self.cityscapes_color_to_mask(semantic_image).to(torch.int64)
+            
+        if self.cfg.virtual_dataset.transforms:
+            frame_transform = {}
+            frame_transform[("T", 0)] = np.load(os.path.join(paths["base_name"], "transforms", f"{paths['frame_id']}.npy"))
+            frame_transform[("T", 1)] = np.load(os.path.join(paths["base_name"], "transforms", f"{paths['frame_id']+1}.npy"))
+            frame_transform[("T", -1)] = np.load(os.path.join(paths["base_name"], "transforms", f"{paths['frame_id']-1}.npy"))
+            sample[("T", -1)] = torch.from_numpy(self.T_unreal_to_vision @ (np.linalg.inv(frame_transform[("T", 0)]) @ frame_transform[("T", -1)])).to(torch.float32)
+            sample[("T", 1)] = torch.from_numpy(self.T_unreal_to_vision @ (np.linalg.inv(frame_transform[("T", 0)]) @ frame_transform[("T", 1)])).to(torch.float32)
         
         sample['K'] = torch.from_numpy(self.calib[paths["scene"]]).to(torch.float32)
         sample['inv_K'] = torch.linalg.pinv(sample['K']).to(torch.float32)
